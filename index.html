@@ -1218,6 +1218,13 @@
       <div id="tab-telegram" class="tpane">
         <div class="tg-form">
           <div style="font-size:9px;color:var(--t3)">TELEGRAM BOT ALERTS</div>
+          <div
+            style="font-size:8px;color:var(--t2);background:rgba(0,255,136,.06);border:1px solid rgba(0,255,136,.2);border-radius:4px;padding:6px 8px;line-height:1.7">
+            <span style="color:var(--g);font-weight:700">\u26a1 ALL 5 COINS MONITORED</span><br>
+            When alerts are enabled, SmartFlow PRO scans<br>
+            <b style="color:var(--t)">ETH · BTC · SOL · BNB · XRP</b> every 90 seconds<br>
+            and sends a separate alert for each coin that triggers.
+          </div>
           <input class="tg-input" id="tg-token" placeholder="Bot Token: 12345:ABCdef…" type="password" />
           <input class="tg-input" id="tg-chat" placeholder="Chat ID: -100123456789" />
           <label style="font-size:9px;color:var(--t2);display:flex;align-items:center;gap:6px;cursor:pointer">
@@ -1229,6 +1236,8 @@
             <button class="tg-btn" onclick="saveTgConfig()" style="flex:1">💾 SAVE</button>
           </div>
           <div id="tg-status" class="tg-status"></div>
+          <div id="scan-badge" style="font-size:9px;color:var(--t3);padding:5px 0;margin-bottom:2px">Scanner not yet
+            run…</div>
           <div
             style="font-size:8px;color:var(--t3);line-height:1.6;border:1px solid var(--b1);border-radius:4px;padding:7px">
             <strong style="color:var(--c)">RENDER DEPLOY GUIDE:</strong><br>
@@ -1301,7 +1310,7 @@
       tg: { token: '', chat: '', enabled: false },
       activeTab: 'dashboard',
       btResult: null,
-      lastAlert: 0,
+      lastAlert: {},  // per-symbol: {ETHUSDT:0, BTCUSDT:0, ...}
       priceDecimals: 2,
     };
 
@@ -1685,13 +1694,16 @@
       };
 
       // Log to history
-      if (conf >= 65 && dir !== 'NEUTRAL' && dir !== 'WAIT' && Date.now() - G.lastAlert > 300000) {
-        G.lastAlert = Date.now();
+      const symCooldown = G.lastAlert[G.sym] || 0;
+      if (conf >= 65 && dir !== 'NEUTRAL' && dir !== 'WAIT' && Date.now() - symCooldown > 300000) {
+        G.lastAlert[G.sym] = Date.now();
         const rec = {
           time: new Date().toLocaleTimeString(),
           type: cls.replace(/[^\w\s]/g, '').trim().slice(0, 20),
+          cls, sigClass,
           dir, conf, status: 'LIVE',
           entry, sl, tp1, tp2, oiPattern,
+          bias4h, bias1h, funding: G.funding,
           id: Date.now(),
         };
         G.history.unshift(rec);
@@ -2574,20 +2586,40 @@
     // ═══════════════════════════════════════════════════════
     //  TELEGRAM
     // ═══════════════════════════════════════════════════════
-    async function sendTelegram(rec) {
+    async function sendTelegram(rec, symOverride, decOverride) {
       if (!G.tg.enabled || !G.tg.token || !G.tg.chat) return;
-      const d = G.priceDecimals;
-      const msg = `🤖 *SMARTFLOW PRO ALERT*\n` +
-        `📊 *${G.sym}* — ${rec.dir} SIGNAL\n` +
-        `🎯 *Class:* ${rec.type}\n` +
-        `💰 *Entry:* \`${fmt(rec.entry, d)}\`\n` +
-        `🛑 *Stop Loss:* \`${fmt(rec.sl, d)}\`\n` +
-        `🎯 *TP1:* \`${fmt(rec.tp1, d)}\`\n` +
-        `🎯 *TP2:* \`${fmt(rec.tp2, d)}\`\n` +
-        `📈 *OI Pattern:* ${rec.oiPattern}\n` +
-        `⚡ *Confidence:* ${rec.conf}%\n` +
-        `⏰ *Time:* ${rec.time}\n` +
-        `_⚠ Educational purposes only. Not financial advice._`;
+      const sym = symOverride || G.sym;
+      const d = decOverride || G.priceDecimals;
+      const arrow = rec.dir === 'LONG' ? '\u2191' : '\u2193';
+      const emoji = rec.dir === 'LONG' ? '\ud83d\udfe2' : '\ud83d\udd34';
+      const now = Date.now();
+      const r15 = 900000 - (now % 900000);
+      const r1h = 3600000 - (now % 3600000);
+      const fmtCD = ms => { const m = Math.floor(ms / 60000), s = Math.floor(ms % 60000 / 1000); return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0'); };
+      const msg =
+        `\ud83e\udd16 *SMARTFLOW PRO* ${emoji} *${rec.dir} SIGNAL*\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `\ud83d\udcca *Pair:* ${sym.replace('USDT', '')}/USDT\n` +
+        `\ud83c\udfaf *Signal:* ${rec.sigClass || rec.type}\n` +
+        `\ud83d\udcdd *Event:* ${rec.cls || rec.type}\n` +
+        `\n` +
+        `*\ud83d\udcb0 TRADE LEVELS*\n` +
+        `Entry:  \`${fmt(rec.entry, d)}\`\n` +
+        `Stop:   \`${fmt(rec.sl, d)}\` \ud83d\uded1\n` +
+        `TP1:    \`${fmt(rec.tp1, d)}\` ${arrow} 1:2 RR\n` +
+        `TP2:    \`${fmt(rec.tp2, d)}\` ${arrow} 1:3 RR\n` +
+        `\n` +
+        `*\ud83e\udde0 SMART MONEY*\n` +
+        `OI Pattern: ${(rec.oiPattern || '').replace(/_/g, ' ')}\n` +
+        `4H Bias: ${rec.bias4h || '—'}  |  1H Bias: ${rec.bias1h || '—'}\n` +
+        `Funding: ${rec.funding !== undefined ? (rec.funding * 100).toFixed(4) + '%' : '—'}\n` +
+        `\n` +
+        `\u26a1 *Confidence: ${rec.conf}%*\n` +
+        `\u23f0 15M closes in: ${fmtCD(r15)}\n` +
+        `\u23f0 1H closes in:  ${fmtCD(r1h)}\n` +
+        `\u23f1 ${rec.time}\n` +
+        `\n` +
+        `_\u26a0 Educational only \u2014 Not financial advice_`;
       try {
         await fetch(`https://api.telegram.org/bot${G.tg.token}/sendMessage`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -2747,6 +2779,152 @@
     setInterval(refreshQuick, 15000);
     // Full reload every 5 min
     setInterval(loadAll, 300000);
+
+    // ═══════════════════════════════════════════════════════
+    //  BACKGROUND MULTI-SYMBOL ALERT SCANNER
+    //  Monitors ALL 5 coins independently every 90 seconds
+    //  Sends Telegram alerts for any coin that triggers
+    // ═══════════════════════════════════════════════════════
+    const ALL_SYMS = [
+      { sym: 'ETHUSDT', dec: 2 },
+      { sym: 'BTCUSDT', dec: 1 },
+      { sym: 'SOLUSDT', dec: 2 },
+      { sym: 'BNBUSDT', dec: 3 },
+      { sym: 'XRPUSDT', dec: 4 },
+    ];
+
+    // Alert badge in TG tab showing last scan status
+    function updateScanBadge(results) {
+      const el = document.getElementById('scan-badge');
+      if (!el) return;
+      const hits = results.filter(r => r.fired);
+      el.textContent = hits.length
+        ? `\u26a1 ${hits.length} alert(s) sent: ${hits.map(r => r.sym.replace('USDT', '')).join(', ')}`
+        : `\u2713 Scanned ${results.length} pairs — no triggers`;
+      el.style.color = hits.length ? 'var(--g)' : 'var(--t3)';
+    }
+
+    async function bgFetchQuick(sym) {
+      const [k15raw, tkRaw, frRaw, oiNow] = await Promise.all([
+        apiFetch(`${FAPI}/fapi/v1/klines?symbol=${sym}&interval=15m&limit=80`),
+        apiFetch(`${FAPI}/fapi/v1/ticker/24hr?symbol=${sym}`),
+        apiFetch(`${FAPI}/fapi/v1/fundingRate?symbol=${sym}&limit=3`),
+        apiFetch(`${FAPI}/fapi/v1/openInterest?symbol=${sym}`),
+      ]);
+      const c15 = k15raw ? k15raw.map(parseCandle) : [];
+      const funding = (frRaw && frRaw.length) ? +frRaw[frRaw.length - 1].fundingRate : 0;
+      const price = tkRaw ? +tkRaw.lastPrice : 0;
+      return { c15, funding, price, oiHist: [] };
+    }
+
+    function bgAnalyze(c15, funding) {
+      if (c15.length < 30) return null;
+      const N = c15.length - 1;
+      const last = c15[N], prev = c15[N - 1] || last;
+      const cl = c15.map(c => c.c);
+      const e20arr = ema(cl, 20), e50arr = ema(cl, 50);
+      const vwapArr = vwap(c15);
+      const rsiArr = rsi(cl, 14);
+      const atrArr = atr(c15, 14);
+      const lastE20 = e20arr[N], lastE50 = e50arr[N];
+      const lastVWAP = vwapArr[N];
+      const lastRSI = rsiArr[N];
+      const lastATR = atrArr[N] || (last.h - last.l);
+      const priceUp = last.c > prev.c;
+      const vols = c15.map(c => c.v);
+      const qvols = c15.map(c => c.qv);
+      const tqvols = c15.map(c => c.tqv);
+      const avgVol = vols.slice(-20).reduce((a, b) => a + b, 0) / 20 || 1;
+      const volRatio = vols[N] / avgVol;
+      const takerBuyR = qvols[N] > 0 ? tqvols[N] / qvols[N] : 0.5;
+      const buyPres = takerBuyR > 0.55, sellPres = takerBuyR < 0.45;
+      const hi = c15.map(c => c.h), lo = c15.map(c => c.l);
+      const rangeH = Math.max(...hi.slice(-10));
+      const rangeL = Math.min(...lo.slice(-10));
+      // Simple score
+      let bull = 0, bear = 0;
+      if (last.c > lastE20 && last.c > lastE50) bull += 20; else bear += 20;
+      if (last.c > lastVWAP) bull += 12; else bear += 12;
+      if (lastRSI > 55) bull += 10; else if (lastRSI < 45) bear += 10;
+      if (buyPres) bull += 10; if (sellPres) bear += 10;
+      if (volRatio > 1.8 && buyPres) bull += 12;
+      if (volRatio > 1.8 && sellPres) bear += 12;
+      const fundLong = funding > 0.0003, fundShort = funding < -0.0003;
+      if (fundShort) bull += 10; if (fundLong) bear += 10;
+      const tot = bull + bear || 1;
+      const bullPct = bull / tot * 100;
+      // Confirmations count
+      let confs = 0;
+      if (last.c > lastE20 && last.c > lastE50) confs++;
+      if (last.c > lastVWAP && prev.c <= lastVWAP) confs++;
+      if (lastRSI > 50 && rsiArr[N - 1] <= 50) confs++;
+      let bconfs = 0;
+      if (last.c < lastE20 && last.c < lastE50) bconfs++;
+      if (last.c < lastVWAP && prev.c >= lastVWAP) bconfs++;
+      if (lastRSI < 50 && rsiArr[N - 1] >= 50) bconfs++;
+      // Whipsaw
+      const dojiCount = c15.slice(-4).filter(c => { const b = Math.abs(c.c - c.o), r = c.h - c.l; return r > lastATR * 0.8 && b < r * 0.3; }).length;
+      if (dojiCount >= 2) return null;
+      let dir = 'NEUTRAL', conf = 25, cls = '', sigClass = 'WAIT';
+      const oiPat = 'NEUTRAL';
+      if (bullPct > 65 && confs >= 2) {
+        dir = 'LONG'; conf = Math.min(88, 40 + (bull - bear) * 0.55);
+        sigClass = bullPct > 75 ? 'STRONG BUY' : 'EARLY BUY';
+        cls = 'BULLISH FLOW';
+      } else if (bullPct < 35 && bconfs >= 2) {
+        dir = 'SHORT'; conf = Math.min(88, 40 + (bear - bull) * 0.55);
+        sigClass = bullPct < 25 ? 'STRONG SELL' : 'EARLY SELL';
+        cls = 'BEARISH FLOW';
+      }
+      conf = Math.round(Math.min(95, Math.max(10, conf)));
+      if (dir === 'NEUTRAL') return null;
+      const entry = last.c;
+      const atrBuf = lastATR * 0.3;
+      let sl, tp1, tp2;
+      if (dir === 'LONG') { sl = rangeL - atrBuf; tp1 = entry + (entry - sl) * 2; tp2 = entry + (entry - sl) * 3; }
+      else { sl = rangeH + atrBuf; tp1 = entry - (sl - entry) * 2; tp2 = entry - (sl - entry) * 3; }
+      return { dir, conf, cls, sigClass, entry, sl, tp1, tp2, oiPattern: oiPat, bias4h: '—', bias1h: '—', funding };
+    }
+
+    async function runBgScan() {
+      if (!G.tg.enabled) return;
+      const results = [];
+      for (const { sym, dec } of ALL_SYMS) {
+        try {
+          const { c15, funding } = await bgFetchQuick(sym);
+          const result = bgAnalyze(c15, funding);
+          const cooldown = G.lastAlert[sym] || 0;
+          let fired = false;
+          if (result && result.conf >= 65 && Date.now() - cooldown > 300000) {
+            G.lastAlert[sym] = Date.now();
+            const rec = {
+              ...result,
+              time: new Date().toLocaleTimeString(),
+              type: result.cls,
+              status: 'BG',
+              id: Date.now(),
+            };
+            // Add to history with coin label
+            G.history.unshift({ ...rec, sym });
+            if (G.history.length > 100) G.history.pop();
+            await sendTelegram(rec, sym, dec);
+            fired = true;
+          }
+          results.push({ sym, fired, conf: result?.conf || 0 });
+        } catch (e) {
+          results.push({ sym, fired: false, conf: 0 });
+        }
+        // Small delay between coins to avoid rate limits
+        await new Promise(r => setTimeout(r, 800));
+      }
+      updateScanBadge(results);
+      updateHistoryTab();
+    }
+
+    // Run background scan every 90 seconds
+    setInterval(runBgScan, 90000);
+    // Also run once after 10 seconds on first load
+    setTimeout(runBgScan, 10000);
 
     // Boot
     window.addEventListener('DOMContentLoaded', () => { restoreTgConfig(); loadAll(); });
